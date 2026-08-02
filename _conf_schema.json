@@ -224,6 +224,34 @@
         "type": "bool",
         "default": false,
         "hint": "为分句流式 TTS、持续监听和语音插话启用统一实验开关。当前版本先建立配置入口，关闭时保持原有稳定流程。"
+      },
+      "cosyvoice": {
+        "description": "联动已安装的 CosyVoice 插件（第三方）",
+        "type": "object",
+        "hint": "直接复用已安装的 astrbot_plugin_cosyvoice 实例进行语音合成，无需单独启动 TTS 服务。不影响原有 AstrBot TTS 链路。",
+        "items": {
+          "enabled": {
+            "description": "启用 CosyVoice 联动",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后，当 speech.tts_provider_id 留空且 AstrBot 没有可用人声时，直接调用已安装的 CosyVoice 插件把房间内 Bot 文本合成语音。"
+          },
+          "plugin_id": {
+            "description": "CosyVoice 插件 ID",
+            "type": "string",
+            "default": "astrbot_plugin_cosyvoice",
+            "hint": "已在 AstrBot 中安装的 CosyVoice 插件标识。保持默认即可，除非你安装了改名/分支版本。"
+          },
+          "voice": {
+            "description": "默认音色",
+            "type": "string",
+            "default": "",
+            "enum": [
+              ""
+            ],
+            "hint": "启用 CosyVoice 联动后，本插件会自动从 CosyVoice 插件读取可用音色并填充下拉；选「(默认)」即使用 CosyVoice 插件自身配置的默认音色。手动填写必须是 list_voices 返回之一。"
+          }
+        }
       }
     }
   },

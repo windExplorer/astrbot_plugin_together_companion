@@ -58,6 +58,58 @@ def get_together_companion_bridge() -> TogetherCompanionTokenBridge | None:
     plugin = _active_plugin
     return plugin.token_bridge if plugin is not None else None
 
+
+class CosyVoiceTtsProvider:
+    """联动已安装的 CosyVoice 插件实例，作为 TTS Provider 的回退来源。
+
+    直接复用 AstrBot 进程内已加载的 CosyVoice 插件 Star 实例
+    （通过其 ``engine.synthesize(text, voice)``），把房间内 Bot 文本合成
+    wav 并返回文件路径，与 ``_get_tts_provider`` / ``_speak_in_room`` 既有的
+    ``get_audio -> 文件路径`` 约定保持一致。不改动原有 AstrBot TTS 链路，
+    也不自行维护 HTTP 推理服务。
+    """
+
+    def __init__(self, plugin_instance: Any, voice: str = "") -> None:
+        # plugin_instance 为已激活的 CosyVoicePlugin Star 实例
+        self.plugin = plugin_instance
+        self.voice = voice or ""
+        self._label = "cosyvoice"
+
+    # 与 AstrBot 约定一致：get_audio 为可 await 的协程，返回音频文件路径
+    async def get_audio(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError("CosyVoiceTtsProvider 收到空文本")
+        engine = getattr(self.plugin, "engine", None)
+        if engine is None or not hasattr(engine, "synthesize"):
+            raise RuntimeError("CosyVoice 插件实例缺少可用的 engine.synthesize")
+        path = await engine.synthesize(text, self.voice or None)
+        if not path:
+            raise RuntimeError("CosyVoice 合成未返回音频文件（请检查 CosyVoice 音色配置）")
+        return str(path)
+
+
+def _resolve_cosyvoice_plugin(plugin_id: str) -> Any | None:
+    """从 AstrBot 全局插件表中取出已激活的 CosyVoice 插件实例。"""
+    try:
+        from astrbot.core.star import star_map
+    except Exception:
+        return None
+    metadata = star_map.get(plugin_id)
+    if metadata is None:
+        return None
+    if not getattr(metadata, "activated", False):
+        logger.warning("[TogetherCompanion] CosyVoice 插件 %s 未激活", plugin_id)
+        return None
+    instance = getattr(metadata, "star_cls", None)
+    if instance is None:
+        return None
+    if not hasattr(getattr(instance, "engine", None), "synthesize"):
+        logger.warning("[TogetherCompanion] CosyVoice 插件 %s 实例缺少 engine.synthesize", plugin_id)
+        return None
+    return instance
+
+
 BASE_REALTIME_PROMPT = """
 你正在与主要用户实时共处，而不是在普通聊天窗口里写长回复。
 像自然通话一样说话：优先使用一到三句简短、口语化、能直接听懂的话；不要使用 Markdown、列表、标题、括号舞台动作或结尾表情。
@@ -304,6 +356,7 @@ class TogetherCompanionPlugin(Star):
         self.stt_correction_enabled = self._cfg_bool("speech.stt_correction_enabled", True)
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
+        self._init_cosyvoice_provider()
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
         self.direct_multilingual_tts = self._cfg_bool("speech.direct_multilingual_tts", True)
         self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
@@ -995,6 +1048,7 @@ class TogetherCompanionPlugin(Star):
         self.stt_correction_enabled = self._cfg_bool("speech.stt_correction_enabled", True)
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
+        self._init_cosyvoice_provider()
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
         self.direct_multilingual_tts = self._cfg_bool("speech.direct_multilingual_tts", True)
         self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
@@ -2157,6 +2211,66 @@ class TogetherCompanionPlugin(Star):
             providers = []
         return next((item for item in providers if hasattr(item, "get_text")), None)
 
+    def _init_cosyvoice_provider(self) -> None:
+        """按配置联动已安装的 CosyVoice 插件（不影响原有 AstrBot TTS 链路）。"""
+        self.cosyvoice_provider: "CosyVoiceTtsProvider | None" = None
+        if not self._cfg_bool("speech.cosyvoice.enabled", False):
+            return
+        plugin_id = self._cfg_str("speech.cosyvoice.plugin_id", "astrbot_plugin_cosyvoice")
+        instance = _resolve_cosyvoice_plugin(plugin_id)
+        if instance is None:
+            logger.warning(
+                "[TogetherCompanion] 已启用 CosyVoice 联动，但未找到可用插件 %s（确认已安装并启用）",
+                plugin_id,
+            )
+            return
+        self.cosyvoice_provider = CosyVoiceTtsProvider(
+            plugin_instance=instance,
+            voice=self._cfg_str("speech.cosyvoice.voice", ""),
+        )
+        self._refresh_cosyvoice_voice_enum(instance)
+
+    def _refresh_cosyvoice_voice_enum(self, instance: Any) -> None:
+        """从 CosyVoice 插件读取可用音色，刷新本地 _conf_schema.json 的下拉选项。
+
+        仅当音色列表发生变化时才写盘，避免无意义改动仓库文件。
+        """
+        engine = getattr(instance, "engine", None)
+        if engine is None or not hasattr(engine, "list_voices"):
+            return
+        try:
+            voices = engine.list_voices() or []
+            voice_names = [str(v) for v in voices if v]
+        except Exception as exc:
+            logger.warning("[TogetherCompanion] 读取 CosyVoice 音色列表失败: %s", _single_line(exc, 200))
+            return
+        # 首个选项为空串，表示「使用 CosyVoice 默认音色」
+        options = [""] + sorted(set(voice_names))
+        schema_path = Path(__file__).parent / "_conf_schema.json"
+        if not schema_path.exists():
+            return
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+            voice_item = (
+                schema.get("speech", {})
+                .get("items", {})
+                .get("cosyvoice", {})
+                .get("items", {})
+                .get("voice")
+            )
+            if not isinstance(voice_item, dict):
+                return
+            old = voice_item.get("enum")
+            if old == options:
+                return
+            voice_item["enum"] = options
+            schema_path.write_text(
+                json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            logger.info("[TogetherCompanion] 已刷新 CosyVoice 音色下拉（%d 项）", len(options) - 1)
+        except Exception as exc:
+            logger.warning("[TogetherCompanion] 写回 CosyVoice 音色下拉失败: %s", _single_line(exc, 200))
+
     def _get_tts_provider(self) -> Any | None:
         provider = self._get_provider_by_id(self.tts_provider_id)
         if provider is not None and hasattr(provider, "get_audio"):
@@ -2164,9 +2278,14 @@ class TogetherCompanionPlugin(Star):
         getter = getattr(self.context, "get_using_tts_provider", None)
         try:
             provider = getter() if callable(getter) else None
-            return provider if provider is not None and hasattr(provider, "get_audio") else None
+            if provider is not None and hasattr(provider, "get_audio"):
+                return provider
         except Exception:
-            return None
+            provider = None
+        # 回退：未配置 AstrBot TTS 时，使用 CosyVoice 适配 Provider（若已启用）
+        if self.cosyvoice_provider is not None:
+            return self.cosyvoice_provider
+        return None
 
     def _companion_realtime_voice_config(self) -> dict[str, Any]:
         api = self._private_companion_api()

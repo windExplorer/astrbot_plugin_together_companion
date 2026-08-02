@@ -1,5 +1,9 @@
 # Changelog
 
+## 未发布
+
+- 新增 CosyVoice TTS 联动：在 `speech.cosyvoice` 配置块可启用「联动已安装的 astrbot_plugin_cosyvoice 插件」，作为未配置 AstrBot 自带 TTS Provider 时的回退语音合成来源。直接复用 AstrBot 进程内已加载的 CosyVoice 插件实例（调用其 `engine.synthesize`），无需单独启动 TTS 服务；原有 AstrBot TTS 链路优先级不变，仅在无可用 AstrBot TTS 且启用 CosyVoice 时接管房间内 Bot 文本转语音。`voice` 音色项会自动从 CosyVoice 插件的 `engine.list_voices()` 读取并渲染为 WebUI 下拉，首个「(默认)」选项表示沿用 CosyVoice 默认音色。
+
 ## 0.8.2 - 2026-07-23
 
 - 优化长时间静默后的自主挂断：连续静默判断不再错误重置累计时长，模型能看到累计静默时间和判断次数；第三次及以后可结合用户可能离开、话题收束、时间、人格和关系，自主先告别再挂断，但不会按固定倒计时强制断线。
