@@ -126,6 +126,35 @@ class CosyVoiceTtsProvider:
         logger.info("[TogetherCompanion] 已由 CosyVoice 合成语音（音色=%s，%d 字）", self.current_voice() or "默认", len(text))
         return str(path)
 
+    def supports_streaming(self) -> bool:
+        """是否支持逐段流式合成（长文本时分段生成并逐个返回，避免整体超时）。"""
+        plugin = self._resolve_plugin()
+        engine = getattr(plugin, "engine", None)
+        return engine is not None and hasattr(engine, "iter_segment_wavs")
+
+    async def stream_audio(self, text: str) -> "AsyncIterator[str]":
+        """逐段流式合成，依次 yield 每段 wav 文件路径（不等待全部完成）。
+
+        长文本被分成多段，每段合成完立即产出，由调用方逐段推给房间播放，
+        从而避免一次性合并整段文本导致的总时长超时（TimeoutError）。
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        # 每次合成前重新解析当前实例，避免 CosyVoice 重载后旧 client 已关闭导致失败
+        plugin = self._resolve_plugin()
+        engine = getattr(plugin, "engine", None)
+        if engine is None or not hasattr(engine, "iter_segment_wavs"):
+            raise RuntimeError("CosyVoice 插件实例缺少可用的 engine.iter_segment_wavs")
+        async for path in engine.iter_segment_wavs(text, self.voice or None):
+            if not path:
+                continue
+            logger.info(
+                "[TogetherCompanion] 已由 CosyVoice 流式合成一段（音色=%s）",
+                self.current_voice() or "默认",
+            )
+            yield str(path)
+
 
 def _resolve_cosyvoice_plugin(plugin_id: str) -> Any | None:
     """从 AstrBot 全局插件表中取出已激活的 CosyVoice 插件实例。
@@ -5063,6 +5092,49 @@ class TogetherCompanionPlugin(Star):
         await self.send_room_payload(room, {"type": "status", "state": "speaking", "text": "正在说话"})
         try:
             synthesis: dict[str, Any] | None = None
+            # 流式路径：Provider（如 CosyVoice）支持逐段合成时，一段一段生成并立即推给房间播放，
+            # 避免长文本一次性合并导致的总时长超时（TimeoutError）而整段失败。
+            if provider is not None and hasattr(provider, "supports_streaming") and provider.supports_streaming():
+                if room.mode == "watch" and not room.watch_tts_enabled:
+                    if visible_text:
+                        await self.send_room_payload(
+                            room,
+                            {"type": "bot_text", "text": visible_text, "source": display_source},
+                        )
+                    return False
+                delivered_count = 0
+                async for segment_path in provider.stream_audio(spoken):
+                    if not segment_path:
+                        continue
+                    seg_path = Path(str(segment_path))
+                    if not seg_path.is_file():
+                        continue
+                    audio_bytes = await asyncio.to_thread(seg_path.read_bytes)
+                    if not audio_bytes or len(audio_bytes) > 24 * 1024 * 1024:
+                        continue
+                    mime_type = mimetypes.guess_type(seg_path.name)[0] or "audio/wav"
+                    await self._start_live_mouth_sync(room, seg_path)
+                    await self.send_room_payload(
+                        room,
+                        with_action({
+                            "type": "audio",
+                            "mime": mime_type,
+                            "data": base64.b64encode(audio_bytes).decode("ascii"),
+                            "text": spoken,
+                            "language": "",
+                            "display_text": visible_text,
+                            "source": display_source,
+                        }),
+                    )
+                    delivered_count += 1
+                    logger.info(
+                        "[TogetherCompanion] TTS 流式推送一段: room=%s provider=%s segment=%d bytes=%s",
+                        room.room_id[:10],
+                        self._provider_label(provider),
+                        delivered_count,
+                        len(audio_bytes),
+                    )
+                return bool(action)
             # 优先使用已解析的 TTS Provider（如 CosyVoice 联动）直接合成，返回本地 wav 即可推流；
             # 只有没有可用 Provider 时，才回退到陪伴插件的 synthesize_realtime_voice 桥接。
             if provider is not None and hasattr(provider, "get_audio"):

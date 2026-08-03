@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.21 - 2026-08-03
+
+- 修复长文本 CosyVoice 合成超时失败（TimeoutError）：此前用 `get_audio` 一次性合并整段文本，长回复被 CosyVoice 分成多段（如 8 段）逐段合成，总时长远超 60s 超时导致整段失败、一个字都播不出。改为**流式分段合成**：`CosyVoiceTtsProvider` 新增 `stream_audio()`，借助 CosyVoice 的 `iter_segment_wavs` 一段一段生成 wav，`_speak_in_room` 每拿到一段立即推给房间播放，不再等待全部合成完，长文本也能边合成边朗读。
+
 ## 0.8.20 - 2026-08-03
 
 - 房间设置页（一起房间 →「模型与语音」）新增「CosyVoice 兜底」开关（`speech.cosyvoice_enabled`），默认开启 = 作为最后兜底；用户想完全禁用 CosyVoice 可直接关闭，无需卸载插件。该开关与后台配置打通（`_page_setting_values` / `_validate_page_settings` 已加入），保存后立即生效。
