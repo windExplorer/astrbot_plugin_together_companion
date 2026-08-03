@@ -1,8 +1,79 @@
 # Changelog
 
+## 0.8.20 - 2026-08-03
+
+- 房间设置页（一起房间 →「模型与语音」）新增「CosyVoice 兜底」开关（`speech.cosyvoice_enabled`），默认开启 = 作为最后兜底；用户想完全禁用 CosyVoice 可直接关闭，无需卸载插件。该开关与后台配置打通（`_page_setting_values` / `_validate_page_settings` 已加入），保存后立即生效。
+
 ## 0.8.3 - 2026-08-03
 
-- 新增 CosyVoice TTS 联动：在 `speech.cosyvoice` 配置块可启用「联动已安装的 astrbot_plugin_cosyvoice 插件」，作为未配置 AstrBot 自带 TTS Provider 时的回退语音合成来源。直接复用 AstrBot 进程内已加载的 CosyVoice 插件实例（调用其 `engine.synthesize`），无需单独启动 TTS 服务；原有 AstrBot TTS 链路优先级不变，仅在无可用 AstrBot TTS 且启用 CosyVoice 时接管房间内 Bot 文本转语音。`voice` 音色项会自动从 CosyVoice 插件的 `engine.list_voices()` 读取并渲染为 WebUI 下拉，首个「(默认)」选项表示沿用 CosyVoice 默认音色。
+- 新增 CosyVoice TTS 联动：在「语音链路」配置分组可启用「启用 CosyVoice 联动（第三方插件）」，作为未配置 AstrBot 自带 TTS Provider 时的回退语音合成来源。直接复用 AstrBot 进程内已加载的 CosyVoice 插件实例（调用其 `engine.synthesize`），无需单独启动 TTS 服务；原有 AstrBot TTS 链路优先级不变，仅在无可用 AstrBot TTS 且启用 CosyVoice 时接管房间内 Bot 文本转语音。`CosyVoice 默认音色` 项会自动从 CosyVoice 插件的 `engine.list_voices()` 读取并渲染为下拉，选「(默认)」即沿用 CosyVoice 默认音色。
+
+## 0.8.4 - 2026-08-03
+
+- 房间页面（一起房间）的「语音 → TTS Provider」下拉现在可直接选择 **CosyVoice 联动**作为语音合成来源，并正确路由到 CosyVoice 插件实例；此前 CosyVoice 仅在 TTS Provider 留空时作为隐藏回退，房间页面不可见。
+- 新增 `build_zip.ps1` 打包脚本：从 `metadata.yaml` 读取版本号生成 `dist/astrbot_plugin_together_companion_<版本>.zip`，强制使用正斜杠（修复 Windows 打包反斜杠导致 Linux 资源丢失的问题），并加入撞版检测（同版本包已存在则报错退出，必须先升级版本号）。
+
+## 0.8.5 - 2026-08-03
+
+- CosyVoice 在房间页面「语音 → TTS Provider」下拉的可见性改为依赖后台配置项 `启用 CosyVoice 联动`，只要开启即可见、可选，不再受插件加载时机影响；选择后运行时按需解析 CosyVoice 插件实例，未就绪会给出明确日志提示。
+
+## 0.8.6 - 2026-08-03
+
+- 房间设置「模型与语音」标签页新增 **CosyVoice 联动**分组：可直接在房间页面勾选「启用 CosyVoice 联动」并选择「默认音色」（音色列表运行时从 CosyVoice 插件 `list_voices()` 读取）。未启用时给出引导提示；启用后 TTS Provider 下拉也会出现 CosyVoice 选项。
+
+## 0.8.7 - 2026-08-03
+
+- 回退 0.8.4~0.8.6 中把 CosyVoice 塞进房间页面 TTS Provider 下拉及「模型与语音」标签页分组的改动，恢复为最初的干净实现：CosyVoice 仅在 AstrBot 后台「语音链路」配置分组（`cosyvoice_enabled` / `cosyvoice_plugin_id` / `cosyvoice_voice`）中配置，并在未配置 AstrBot TTS 时作为房间内语音回退。房间页面与 TTS Provider 下拉恢复原状。
+
+## 0.8.8 - 2026-08-03
+
+- 简化 CosyVoice 配置：移除多余的「CosyVoice 插件 ID」可配置项，联动目标固定为 `astrbot_plugin_cosyvoice`（硬编码）。配置分组仅保留「启用 CosyVoice 联动」开关与「默认音色」下拉（音色由 `_refresh_cosyvoice_voice_enum` 运行时从 CosyVoice 插件读取并刷新）。
+
+## 0.8.9 - 2026-08-03
+
+- 修复「默认音色」下拉只有一项的问题：音色下拉刷新不再依赖 `启用 CosyVoice 联动` 开关，插件初始化时只要 star_map 中存在已激活的 CosyVoice 插件实例，就无条件刷新 `cosyvoice_voice.enum`，后台「默认音色」下拉始终可选项。
+
+## 0.8.19 - 2026-08-03
+
+- 修复「CosyVoice 插件重载后语音合成一直失败（client has been closed）」：`CosyVoiceTtsProvider` 原先缓存了构造时的插件实例引用，当 CosyVoice 插件重载后旧实例的 HTTP client 会被关闭，继续用旧引用合成必然失败。现改为每次合成前通过 `_resolve_cosyvoice_plugin` 从 AstrBot `star_map` 重新解析当前激活实例，重载后自动切换新实例，合成恢复正常。
+- 恢复 CosyVoice 显式开关：`speech.cosyvoice_enabled` 默认开启 = 作为「最后兜底」（仅当未配置 `tts_provider_id` 且 AstrBot 无在用 TTS 时生效，不抢占已配置的原生/其它 TTS）；用户想完全禁用 CosyVoice 可关闭该开关，无需卸载插件。
+
+## 0.8.18 - 2026-08-03
+
+- 修复「CosyVoice 已合成但房间不自动播放」：此前 `provider` 非空（如 CosyVoice 联动）时仍走陪伴插件的 `synthesize_realtime_voice` 桥接，桥接返回的 `audio_path` 在本地不可用/为空，导致 `is_file()` 判断失败而只下发文字、不推音频。现在改为**优先直接用 `provider.get_audio()` 合成**（CosyVoice 直接返回本地 wav 并推流播放）；只有当无可用 Provider 时才回退到陪伴插件桥接。配合 0.8.17 的自动接管，房间现在能正常播放 CosyVoice 语音。
+
+## 0.8.17 - 2026-08-03
+
+- 彻底改为 CosyVoice **自动接管**：`_init_cosyvoice_provider` 不再读取任何开关（移除 `speech.cosyvoice_enabled` 判断），只要检测到已激活的 `astrbot_plugin_cosyvoice` 就自动复用其引擎。修复此前「房间 TTS 显示未配置」的根因之一：旧版本 `cosyvoice_enabled` 反转语义撞上用户之前勾选的旧配置值，导致静默跳过接管。同时删除 schema / 页面中的假开关，仅保留「默认音色」文本框。
+- `_resolve_cosyvoice_plugin` 匹配放宽为 name/模块路径包含目标关键字，并在匹配失败时打印所有已激活插件（便于日志定位 CosyVoice 实际注册名）。
+
+## 0.8.16 - 2026-08-03
+
+- 房间设置页（一起房间 →「模型与语音」标签页）新增 **CosyVoice 联动** 配置分组：可在此直接「禁用 CosyVoice 联动」开关与填写「默认音色」，并附状态说明。前端表单与后端 `_page_setting_values` / `_validate_page_settings` 已打通（新增 `speech.cosyvoice_enabled`、`speech.cosyvoice_voice` 两项），保存后立即生效并重建 CosyVoice Provider；同时该页顶部 TTS 状态行会显示实际接管情况（如「CosyVoice（音色）」）。
+
+## 0.8.15 - 2026-08-03
+
+- 真正修复 CosyVoice 无法接管的问题：根因是 `_resolve_cosyvoice_plugin` 用 `star_map.get("astrbot_plugin_cosyvoice")` 查找插件，但 AstrBot 的 `star_map` key 是插件的**模块路径（`__module__`，如 `astrbot_plugin_cosyvoice.main`）**而非 `@register` 的 plugin_id，导致永远查不到实例、`cosyvoice_provider` 恒为 None（日志表现为 `provider=未配置`）。已改为遍历 `star_map` 按 `metadata.name` 或模块路径前缀匹配，CosyVoice 现在能正确被探测并接管房间 TTS（状态行显示「CosyVoice（音色）」）。
+
+## 0.8.14 - 2026-08-03
+
+- 让 CosyVoice 接管状态在房间里**可见且可验证**：(1) `CosyVoiceTtsProvider` 增加 `meta()`，房间「TTS」能力行现在显示为「CosyVoice（音色名）」，而非之前无意义的类名/未配置；(2) capability 额外暴露 `engine_ready` 与 `voice`，引擎尚未初始化完成时标签显示「CosyVoice（引擎未就绪）」，便于区分「已真正接管」与「仅探测到插件」；(3) 合成成功时输出日志「已由 CosyVoice 合成语音（音色=…，N 字）」，可在 AstrBot 日志确认实际走的是 CosyVoice 而非浏览器回退。
+
+## 0.8.13 - 2026-08-03
+
+- 修复「已配置 CosyVoice 但房间仍显示浏览器回退」：根因有二。(1) `_resolve_cosyvoice_plugin` 在插件初始化阶段强校验 `engine.synthesize`，而 CosyVoice 的 engine 在其自身 `initialize` 之后才挂载，导致探测在加载时序差下永远失败、`cosyvoice_provider` 为 None。已移除该强校验（引擎可用性改由 `CosyVoiceTtsProvider.get_audio` 合成时兜底）。(2) 将 `cosyvoice_enabled` 语义反转为「禁用联动」：**默认关闭=自动联动**，只要检测到已激活的 `astrbot_plugin_cosyvoice` 即自动复用其引擎；勾选本项才强制禁用。房间 capability 的 `tts.server_available` 因此正确反映 CosyVoice 可用。
+
+## 0.8.12 - 2026-08-03
+
+- 回退 CosyVoice 默认音色的自动拉取下拉方案：上游加载时序导致自动读取音色列表不可靠，改为后台「CosyVoice 默认音色」为纯文本框，由用户手动填写 CosyVoice 插件中已配置的音色名称（如 中文女、中文男），留空则使用 CosyVoice 插件默认音色。移除 `_refresh_cosyvoice_voice_enum`、`_start_cosyvoice_voice_poller` 及相关轮询逻辑，不再写盘 `_conf_schema.json`。
+
+## 0.8.11 - 2026-08-03
+
+- 修复后台「CosyVoice 默认音色」下拉为空（无可选音色）的问题：根因是原刷新只在插件 `__init__` 时执行一次，而此时 CosyVoice 插件尚未完成初始化、`engine.voices` 仍为空，写回的 `options` 退化成空列表。新增惰性轮询（`_start_cosyvoice_voice_poller`）：插件初始化后每 5 秒尝试一次读取 CosyVoice 音色列表，一旦拿到非空列表即写回 `_conf_schema.json` 并停止（最多 60 秒），彻底消除插件加载顺序导致的下拉为空。
+
+## 0.8.10 - 2026-08-03
+
+- 修复 AstrBot 后台「默认音色」显示为输入框而非下拉选择器的问题：根因是配置项使用了 `enum` 字段，AstrBot 后台只对 `options` 字段渲染为选择器。已将 `cosyvoice_voice` 的 schema 字段由 `enum` 改为 `options`，且运行时刷新音色列表也写回 `options`，后台「CosyVoice 默认音色」现在会正确渲染为带可选音色列表的下拉框。
 
 ## 0.8.2 - 2026-07-23
 

@@ -134,6 +134,20 @@
             <span>实时流式与全双工（实验性）</span>
             <input name="speech.realtime_duplex_enabled" type="checkbox" role="switch" />
           </label>
+          <details class="cosyvoice-config">
+            <summary>CosyVoice 兜底（第三方插件）</summary>
+            <div class="cosyvoice-inner">
+              <label class="setting-row toggle-setting">
+                <span>启用 CosyVoice 兜底</span>
+                <input name="speech.cosyvoice_enabled" type="checkbox" role="switch" />
+              </label>
+              <label class="field cosyvoice-voice-field">
+                <span>默认音色</span>
+                <input name="speech.cosyvoice_voice" type="text" maxlength="80" autocomplete="off" placeholder="留空用 CosyVoice 默认音色" />
+              </label>
+              <p class="cosyvoice-hint">默认开启，作为「最后兜底」：仅当未配置 TTS Provider 且 AstrBot 没有在用的人声时，自动复用已激活的 astrbot_plugin_cosyvoice 合成语音（状态栏显示「CosyVoice（音色）」）。已配置的原生/其它 TTS 始终优先，不受此开关影响。若完全不想用 CosyVoice，关闭此开关即可，无需卸载插件。留空音色使用 CosyVoice 插件自身默认音色。</p>
+            </div>
+          </details>
         </div>
 
         <div class="config-view" id="configWatch" role="tabpanel" data-config-view="watch" hidden>

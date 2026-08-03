@@ -606,6 +606,44 @@ input:focus-visible, select:focus-visible {
 }
 .toggle-setting input[type="checkbox"]:checked::after { transform: translateX(20px); }
 
+.cosyvoice-config {
+  margin-top: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.cosyvoice-config > summary {
+  cursor: pointer;
+  padding: 13px 16px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+.cosyvoice-config > summary::-webkit-details-marker { display: none; }
+.cosyvoice-config > summary::after {
+  content: "";
+  float: right;
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+.cosyvoice-config[open] > summary::after { transform: rotate(-135deg); }
+.cosyvoice-inner { padding: 2px 16px 14px; }
+.cosyvoice-inner .setting-row { min-height: 48px; }
+.cosyvoice-voice-field { margin-top: 12px; }
+.cosyvoice-hint {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .range-setting {
   display: grid;
   grid-template-columns: minmax(190px, .72fr) minmax(220px, 1fr);

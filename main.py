@@ -70,44 +70,102 @@ class CosyVoiceTtsProvider:
     """
 
     def __init__(self, plugin_instance: Any, voice: str = "") -> None:
-        # plugin_instance 为已激活的 CosyVoicePlugin Star 实例
+        # plugin_instance 为已激活的 CosyVoicePlugin Star 实例（初始引用；每次合成时会重新解析当前实例）
         self.plugin = plugin_instance
         self.voice = voice or ""
         self._label = "cosyvoice"
+
+    def _resolve_plugin(self) -> Any:
+        """每次从 AstrBot star_map 重新解析当前激活的 CosyVoice 实例。
+
+        CosyVoice 插件被重载/重载后，旧实例的 HTTP client 会被关闭（报
+        "client has been closed"）；缓存旧引用会导致合成一直失败。因此每次
+        合成前都取最新实例，构造时传入的 plugin 仅作兜底。
+        """
+        latest = _resolve_cosyvoice_plugin("astrbot_plugin_cosyvoice")
+        return latest if latest is not None else self.plugin
+
+    def engine_ready(self) -> bool:
+        engine = getattr(self._resolve_plugin(), "engine", None)
+        return engine is not None and hasattr(engine, "synthesize")
+
+    def current_voice(self) -> str:
+        """当前生效音色：优先本插件配置，回退 CosyVoice 默认音色，再回退首个可用音色。"""
+        if self.voice:
+            return self.voice
+        engine = getattr(self._resolve_plugin(), "engine", None)
+        resolver = getattr(engine, "resolve_voice", None)
+        if callable(resolver):
+            try:
+                name, _, _ = resolver(None)
+                return str(name or "")
+            except Exception:
+                return ""
+        return ""
+
+    def meta(self) -> dict[str, Any]:
+        # 让房间 capability 的 TTS 标签可读，例如「CosyVoice（中文女）」或「CosyVoice（未就绪）」
+        voice = self.current_voice()
+        if not self.engine_ready():
+            return {"model": "CosyVoice（引擎未就绪）"}
+        return {"model": f"CosyVoice（{voice}）" if voice else "CosyVoice"}
 
     # 与 AstrBot 约定一致：get_audio 为可 await 的协程，返回音频文件路径
     async def get_audio(self, text: str) -> str:
         text = (text or "").strip()
         if not text:
             raise RuntimeError("CosyVoiceTtsProvider 收到空文本")
-        engine = getattr(self.plugin, "engine", None)
+        # 每次合成前重新解析当前实例，避免 CosyVoice 重载后旧 client 已关闭导致失败
+        plugin = self._resolve_plugin()
+        engine = getattr(plugin, "engine", None)
         if engine is None or not hasattr(engine, "synthesize"):
-            raise RuntimeError("CosyVoice 插件实例缺少可用的 engine.synthesize")
+            raise RuntimeError("CosyVoice 插件实例缺少可用的 engine.synthesize（可能尚未初始化完成）")
         path = await engine.synthesize(text, self.voice or None)
         if not path:
             raise RuntimeError("CosyVoice 合成未返回音频文件（请检查 CosyVoice 音色配置）")
+        logger.info("[TogetherCompanion] 已由 CosyVoice 合成语音（音色=%s，%d 字）", self.current_voice() or "默认", len(text))
         return str(path)
 
 
 def _resolve_cosyvoice_plugin(plugin_id: str) -> Any | None:
-    """从 AstrBot 全局插件表中取出已激活的 CosyVoice 插件实例。"""
+    """从 AstrBot 全局插件表中取出已激活的 CosyVoice 插件实例。
+
+    注意：``star_map`` 的 key 是插件的**模块路径（``__module__``）**，
+    而非 ``@register`` 的第一个参数（plugin_id / name）。因此不能直接用
+    ``star_map.get(plugin_id)``，而要遍历匹配 ``metadata.name`` 或模块路径前缀。
+
+    只要插件已激活且实例存在即返回，不在此时强校验 engine 是否已就绪——
+    CosyVoice 的 engine 可能在其自身 initialize 之后才挂载，存在加载时序差。
+    真正的 engine 可用性由 CosyVoiceTtsProvider.get_audio 在合成时兜底。
+    """
     try:
         from astrbot.core.star import star_map
     except Exception:
         return None
-    metadata = star_map.get(plugin_id)
-    if metadata is None:
-        return None
-    if not getattr(metadata, "activated", False):
-        logger.warning("[TogetherCompanion] CosyVoice 插件 %s 未激活", plugin_id)
-        return None
-    instance = getattr(metadata, "star_cls", None)
-    if instance is None:
-        return None
-    if not hasattr(getattr(instance, "engine", None), "synthesize"):
-        logger.warning("[TogetherCompanion] CosyVoice 插件 %s 实例缺少 engine.synthesize", plugin_id)
-        return None
-    return instance
+    target = (plugin_id or "").lower()
+    for key, metadata in star_map.items():
+        meta_name = str(getattr(metadata, "name", "") or "").lower()
+        module_path = str(key or "")
+        # 命中：name 精确匹配，或 name/模块路径包含目标关键字
+        if target and target != meta_name:
+            if target not in meta_name and target not in module_path.lower():
+                continue
+        if not getattr(metadata, "activated", False):
+            continue
+        instance = getattr(metadata, "star_cls", None)
+        if instance is None:
+            continue
+        return instance
+    # 诊断：打印所有已激活插件，便于定位 CosyVoice 插件的实际注册名/模块路径
+    logger.warning(
+        "[TogetherCompanion] 未找到目标插件 %s；当前已激活插件: %s",
+        plugin_id,
+        ", ".join(
+            f"{getattr(m, 'name', '') or key}({key}, activated={getattr(m, 'activated', False)})"
+            for key, m in star_map.items()
+        )[:600],
+    )
+    return None
 
 
 BASE_REALTIME_PROMPT = """
@@ -953,6 +1011,8 @@ class TogetherCompanionPlugin(Star):
             "speech.tts_timeout_seconds": 60,
             "speech.tts_volume_percent": 100,
             "speech.realtime_duplex_enabled": False,
+            "speech.cosyvoice_enabled": True,
+            "speech.cosyvoice_voice": "",
             "watch.prepare_knowledge": True,
             "watch.auto_comment": True,
             "watch.comment_interval_seconds": 60,
@@ -971,6 +1031,7 @@ class TogetherCompanionPlugin(Star):
             "speech.stt_provider_id": 160,
             "speech.tts_provider_id": 160,
             "speech.browser_language": 20,
+            "speech.cosyvoice_voice": 80,
         }
         boolean_keys = {
             "conversation.enable_memory_context",
@@ -983,6 +1044,7 @@ class TogetherCompanionPlugin(Star):
             "speech.browser_tts_fallback",
             "speech.direct_multilingual_tts",
             "speech.realtime_duplex_enabled",
+            "speech.cosyvoice_enabled",
             "watch.prepare_knowledge",
             "watch.auto_comment",
             "watch.duck_video_volume",
@@ -2028,11 +2090,16 @@ class TogetherCompanionPlugin(Star):
         vision = self._get_vision_provider()
         stt = self._get_stt_provider()
         tts = self._get_tts_provider()
+        tts_capability: dict[str, Any] = {"available": tts is not None, "label": self._provider_label(tts)}
+        # 明确暴露 CosyVoice 引擎是否真正就绪，便于前端区分「已接管」与「探测到但引擎未就绪」
+        if isinstance(tts, CosyVoiceTtsProvider):
+            tts_capability["engine_ready"] = tts.engine_ready()
+            tts_capability["voice"] = tts.current_voice()
         return {
             "chat": {"available": chat is not None, "label": self._provider_label(chat)},
             "vision": {"available": vision is not None, "label": self._provider_label(vision)},
             "stt": {"available": stt is not None, "label": self._provider_label(stt)},
-            "tts": {"available": tts is not None, "label": self._provider_label(tts)},
+            "tts": tts_capability,
             "work": self._work_collaboration_capability(),
         }
 
@@ -2212,64 +2279,27 @@ class TogetherCompanionPlugin(Star):
         return next((item for item in providers if hasattr(item, "get_text")), None)
 
     def _init_cosyvoice_provider(self) -> None:
-        """按配置联动已安装的 CosyVoice 插件（不影响原有 AstrBot TTS 链路）。"""
+        """联动已安装的 CosyVoice 插件（固定为 astrbot_plugin_cosyvoice，不影响原有 AstrBot TTS 链路）。
+
+        默认开启，作为「最后兜底」：仅当用户未配置 tts_provider_id 且 AstrBot 也没有
+        在用的人声 TTS 时才使用 CosyVoice（优先级见 _get_tts_provider），因此不会抢占
+        已配置的原生/其它 TTS。用户若想完全禁用 CosyVoice，可在配置中关闭
+        speech.cosyvoice_enabled。
+        """
         self.cosyvoice_provider: "CosyVoiceTtsProvider | None" = None
-        if not self._cfg_bool("speech.cosyvoice.enabled", False):
+        # 开关：默认开启=启用 CosyVoice 兜底；关闭=完全禁用
+        if not self._cfg_bool("speech.cosyvoice_enabled", True):
             return
-        plugin_id = self._cfg_str("speech.cosyvoice.plugin_id", "astrbot_plugin_cosyvoice")
-        instance = _resolve_cosyvoice_plugin(plugin_id)
+        instance = _resolve_cosyvoice_plugin("astrbot_plugin_cosyvoice")
         if instance is None:
             logger.warning(
-                "[TogetherCompanion] 已启用 CosyVoice 联动，但未找到可用插件 %s（确认已安装并启用）",
-                plugin_id,
+                "[TogetherCompanion] 已启用 CosyVoice 联动，但未找到可用插件 astrbot_plugin_cosyvoice（确认已安装并启用）",
             )
             return
         self.cosyvoice_provider = CosyVoiceTtsProvider(
             plugin_instance=instance,
-            voice=self._cfg_str("speech.cosyvoice.voice", ""),
+            voice=self._cfg_str("speech.cosyvoice_voice", ""),
         )
-        self._refresh_cosyvoice_voice_enum(instance)
-
-    def _refresh_cosyvoice_voice_enum(self, instance: Any) -> None:
-        """从 CosyVoice 插件读取可用音色，刷新本地 _conf_schema.json 的下拉选项。
-
-        仅当音色列表发生变化时才写盘，避免无意义改动仓库文件。
-        """
-        engine = getattr(instance, "engine", None)
-        if engine is None or not hasattr(engine, "list_voices"):
-            return
-        try:
-            voices = engine.list_voices() or []
-            voice_names = [str(v) for v in voices if v]
-        except Exception as exc:
-            logger.warning("[TogetherCompanion] 读取 CosyVoice 音色列表失败: %s", _single_line(exc, 200))
-            return
-        # 首个选项为空串，表示「使用 CosyVoice 默认音色」
-        options = [""] + sorted(set(voice_names))
-        schema_path = Path(__file__).parent / "_conf_schema.json"
-        if not schema_path.exists():
-            return
-        try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
-            voice_item = (
-                schema.get("speech", {})
-                .get("items", {})
-                .get("cosyvoice", {})
-                .get("items", {})
-                .get("voice")
-            )
-            if not isinstance(voice_item, dict):
-                return
-            old = voice_item.get("enum")
-            if old == options:
-                return
-            voice_item["enum"] = options
-            schema_path.write_text(
-                json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            logger.info("[TogetherCompanion] 已刷新 CosyVoice 音色下拉（%d 项）", len(options) - 1)
-        except Exception as exc:
-            logger.warning("[TogetherCompanion] 写回 CosyVoice 音色下拉失败: %s", _single_line(exc, 200))
 
     def _get_tts_provider(self) -> Any | None:
         provider = self._get_provider_by_id(self.tts_provider_id)
@@ -2282,7 +2312,7 @@ class TogetherCompanionPlugin(Star):
                 return provider
         except Exception:
             provider = None
-        # 回退：未配置 AstrBot TTS 时，使用 CosyVoice 适配 Provider（若已启用）
+        # 回退：未配置 AStrBot TTS 时，使用 CosyVoice 适配 Provider（若已启用）
         if self.cosyvoice_provider is not None:
             return self.cosyvoice_provider
         return None
@@ -5033,7 +5063,11 @@ class TogetherCompanionPlugin(Star):
         await self.send_room_payload(room, {"type": "status", "state": "speaking", "text": "正在说话"})
         try:
             synthesis: dict[str, Any] | None = None
-            if callable(bridge):
+            # 优先使用已解析的 TTS Provider（如 CosyVoice 联动）直接合成，返回本地 wav 即可推流；
+            # 只有没有可用 Provider 时，才回退到陪伴插件的 synthesize_realtime_voice 桥接。
+            if provider is not None and hasattr(provider, "get_audio"):
+                audio_path = await asyncio.wait_for(provider.get_audio(spoken), timeout=timeout_seconds)
+            elif callable(bridge):
                 bridge_kwargs: dict[str, Any] = {
                     "tts_provider": provider,
                     "source": "together_companion",
@@ -5081,8 +5115,6 @@ class TogetherCompanionPlugin(Star):
                         self._tts_bridge_play_local_supported = True
                 synthesis = dict(bridged) if isinstance(bridged, dict) else {}
                 audio_path = synthesis.get("audio_path", "")
-            else:
-                audio_path = await asyncio.wait_for(provider.get_audio(spoken), timeout=timeout_seconds)
             if room.mode == "watch" and not room.watch_tts_enabled:
                 if visible_text:
                     await self.send_room_payload(
